@@ -5,3 +5,8 @@ metrics:
     - recall_macro
     - recall_micro
     - f1_weighted
+    - f1_macro
+    - g_mean
+    - roc_auc
+    - mcc
+    - bacc

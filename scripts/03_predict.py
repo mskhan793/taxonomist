@@ -65,6 +65,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         aug=args.aug,
         load_to_memory=args.load_to_memory,
+        class_map_path=args.class_map  # Ensure this is provided
     )
 
     if args.feature_extraction:

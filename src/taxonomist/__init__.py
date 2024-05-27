@@ -404,6 +404,8 @@ class Dataset(torch.utils.data.Dataset):
         preload_transform: transform to apply to the PIL image after loading and before
                             loading into memory
         transform: transform to apply to the image after loading
+        minority_transform: transform to apply to minority class samples
+        minority_classes: list of minority class labels
         load_to_memory: if True, the images are loaded into memory
     """
 
@@ -411,14 +413,20 @@ class Dataset(torch.utils.data.Dataset):
         self,
         filenames: list,
         y: list,
+        label_map=None,
         preload_transform=None,
         transform=None,
+        minority_transform=None,
+        minority_classes=None,
         load_to_memory=True,
     ):
         self.filenames = filenames
         self.y = y
+        self.label_map = label_map
         self.preload_transform = preload_transform
         self.transform = transform
+        self.minority_transform = minority_transform
+        self.minority_classes = minority_classes
         self.mem_dataset = None
 
         if load_to_memory:
@@ -438,13 +446,24 @@ class Dataset(torch.utils.data.Dataset):
             X = self.__readfile(index)
 
         if self.transform:
-            X = self.transform(X)
+            if self.minority_classes is not None and self.y[index] in self.minority_classes:
+                X = self._apply_transform(X, self.minority_transform)
+            else:
+                X = self._apply_transform(X, self.transform)
 
         if self.y is not None:
             y = torch.as_tensor(self.y[index], dtype=torch.float32)
         else:
             y = None
         return X, y
+
+    def _apply_transform(self, img, transform):
+        if isinstance(img, torch.Tensor):
+            img = TF.to_pil_image(img)
+        img = transform(img)
+        if isinstance(img, Image.Image):
+            img = TF.to_tensor(img)
+        return img
 
     def __readfile(self, index):
         """Actual loading of the item"""
@@ -519,7 +538,8 @@ class LitDataModule(pl.LightningDataModule):
         self.drop_last = lambda x: True if len(x) % batch_size == 1 else False
 
         self.aug_args = {"imsize": imsize}
-        self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)
+
+        self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
 
     def setup(self, stage=None):
         fnames, labels = preprocess_dataset(
@@ -530,77 +550,116 @@ class LitDataModule(pl.LightningDataModule):
             label=self.label,
 
         )
-        
-    ###################################################################33
-        """self.labels["train"] = labels["train"]
-        self.labels["val"] = labels["val"]
-        #self.labels = labels  # Make sure this assignment correctly populates the labels
-        # Assuming labels["train"] contains targets for training dataset
+
+        class_map_path = self.class_map_path
+        class_map = load_class_map(class_map_path)
+
+        # Forward map is used to encode labels
+        label_to_index = class_map['fwd_dict']
+
+        # Encode the training labels using the forward map
+        labels_encoded = {k: encode_labels(v, label_to_index) for k, v in labels.items()}
+        self.labels_encoded = labels_encoded
+            
+        # Number of classes
+        num_classes = len(label_to_index)
+            
+        # Store the class counts
+        self.class_counts = calculate_class_counts(labels_encoded['train'], num_classes)
+
         if stage == 'fit' or stage is None:
-            # Assuming labels["train"] is a list of integers
-            labels_train_np = np.array(labels["train"], dtype=np.int64)  # Convert to NumPy array of type int64
-            train_targets = torch.tensor(labels_train_np)
-            self.class_counts = calculate_class_counts(train_targets)
-            print(self.class_counts)"""
+            # # Load the class map
+            # class_map_path = self.class_map_path
+            # class_map = load_class_map(class_map_path)
 
-        # if stage == 'fit' or stage is None:
-        #     # Create an encoding for the labels
-        #     unique_labels = set(labels["train"])
-        #     label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
+            # # Forward map is used to encode labels
+            # label_to_index = class_map['fwd_dict']
 
-        #     # Encode the training labels
-        #     labels_encoded = [label_to_index[label] for label in labels["train"]]
-        #     self.labels_encoded = {"train": labels_encoded}
+            # # Encode the training labels using the forward map
+            # labels_encoded = encode_labels(labels["train"], label_to_index)
+            # self.labels_encoded = {"train": labels_encoded}
             
-        #     # Store the class counts
-        #     self.class_counts = calculate_class_counts(labels_encoded)
-        #     print(self.class_counts)
-
-        # if stage == 'fit' or stage is None:
-        #     # Load the class map
-        #     class_map_path = args.class_map
-        #     label_to_index = load_class_map(class_map_path)
-
-        #     # Encode the training labels
-        #     labels_encoded = encode_labels(labels["train"], label_to_index)
-        #     self.labels_encoded = {"train": labels_encoded}
+            # # Number of classes
+            # num_classes = len(label_to_index)
             
-        #     # Store the class counts
-        #     self.class_counts = calculate_class_counts(labels_encoded)
-        #     print(self.class_counts, fold)
-        if stage == 'fit' or stage is None:
-            # Load the class map
-            class_map_path = self.class_map_path
-            class_map = load_class_map(class_map_path)
+            # # Store the class counts
+            # self.class_counts = calculate_class_counts(labels_encoded, num_classes)
+            # print(self.class_counts)
 
-            # Forward map is used to encode labels
-            label_to_index = class_map['fwd_dict']
+            if self.aug == "up-sampling":
+                self.tf_train, tf_aug_02, self.tf_test, minority_classes = choose_aug(self.aug, self.aug_args, class_counts=self.class_counts)
 
-            # Encode the training labels using the forward map
-            labels_encoded = encode_labels(labels["train"], label_to_index)
-            self.labels_encoded = {"train": labels_encoded}
-            
-            # Number of classes
-            num_classes = len(label_to_index)
-            
-            # Store the class counts
-            self.class_counts = calculate_class_counts(labels_encoded, num_classes)
-            print(self.class_counts)
+                # Upsample minority classes
+                upsampled_fnames = []
+                upsampled_labels = []
+                upsampled_original_labels = []
+                for fname, encoded_label, original_label in zip(fnames["train"], labels_encoded["train"], labels["train"]):
+                    upsampled_fnames.append(fname)
+                    upsampled_labels.append(encoded_label)
+                    upsampled_original_labels.append(original_label)
+                    if encoded_label in minority_classes:
+                        for _ in range(5):  # Adjust this number to control the amount of upsampling
+                            upsampled_fnames.append(fname)
+                            upsampled_labels.append(encoded_label)
+                            upsampled_original_labels.append(original_label)
+                fnames["train"] = upsampled_fnames
+                labels_encoded["train"] = upsampled_labels
+                labels["train"] = upsampled_original_labels
 
-    ##############################################################3
+                if self.label_transform:
+                    labels["train"] = self.label_transform(labels["train"])
+                #     labels["val"] = self.label_transform(labels["val"])
+                #     labels["test"] = self.label_transform(labels["test"])
+
+                self.trainset = Dataset(
+                    fnames["train"],
+                    labels["train"],
+                    preload_transform=None,
+                    transform=self.tf_train,
+                    minority_transform=tf_aug_02,
+                    minority_classes=minority_classes,
+                    load_to_memory=self.load_to_memory,
+                )
+                
+                #self.tf_test = tf_test
+            else:
+                self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
+
+                if self.label_transform:
+                    labels["train"] = self.label_transform(labels["train"])
+                #     labels["val"] = self.label_transform(labels["val"])
+                #     labels["test"] = self.label_transform(labels["test"])
+
+                self.trainset = Dataset(
+                    fnames["train"],
+                    labels["train"],
+                    preload_transform=None,
+                    transform=self.tf_train,
+                    load_to_memory=self.load_to_memory,
+                )
+        else:
+            if self.label_transform:
+                labels["train"] = self.label_transform(labels["train"])
+            self.trainset = Dataset(
+                    fnames["train"],
+                    labels["train"],
+                    preload_transform=None,
+                    transform=self.tf_train,
+                    load_to_memory=self.load_to_memory,
+                )
 
         if self.label_transform:
-            labels["train"] = self.label_transform(labels["train"])
+        #     labels["train"] = self.label_transform(labels["train"])
             labels["val"] = self.label_transform(labels["val"])
             labels["test"] = self.label_transform(labels["test"])
 
-        self.trainset = Dataset(
-            fnames["train"],
-            labels["train"],
-            preload_transform=None,
-            transform=self.tf_train,
-            load_to_memory=self.load_to_memory,
-        )
+            # self.trainset = Dataset(
+            #         fnames["train"],
+            #         labels["train"],
+            #         preload_transform=None,
+            #         transform=self.tf_train,
+            #         load_to_memory=self.load_to_memory,
+            #     )
 
         self.valset = Dataset(
             fnames["val"],
@@ -631,18 +690,6 @@ class LitDataModule(pl.LightningDataModule):
 
         self.ttaset = torch.utils.data.ConcatDataset(tta_list)
 
-    #################################################################################
-    """    # Inside LitDataModule
-    def calculate_and_get_class_counts(self):
-        # Assuming you have a way to access labels directly or through a dataset attribute
-        # This is a placeholder; adapt it to your actual data structure
-        all_labels = self.labels["train"] + self.labels["val"]
-        train_targets = torch.tensor(all_labels)
-        return calculate_class_counts(train_targets)"""
-##############################################################################
-
-
-
     def train_dataloader(self):
         trainloader = torch.utils.data.DataLoader(
             self.trainset,
@@ -651,7 +698,6 @@ class LitDataModule(pl.LightningDataModule):
             drop_last=self.drop_last(self.trainset),
             num_workers=self.cpu_count,
         )
-
         return trainloader
 
     def val_dataloader(self):
@@ -661,7 +707,6 @@ class LitDataModule(pl.LightningDataModule):
             drop_last=self.drop_last(self.valset),
             num_workers=self.cpu_count,
         )
-
         return valloader
 
     def test_dataloader(self):
@@ -671,7 +716,6 @@ class LitDataModule(pl.LightningDataModule):
             drop_last=False,
             num_workers=self.cpu_count,
         )
-
         return testloader
 
     def tta_dataloader(self):
@@ -699,8 +743,20 @@ class LitDataModule(pl.LightningDataModule):
         visualize_dataset(self.valset, v=False, name=folder / f"{_now}-val.jpg")
         visualize_dataset(self.testset, v=False, name=folder / f"{_now}-test.jpg")
 
+import torchvision.transforms.functional as TF
 
-def choose_aug(aug, args):
+class ConvertToUint8:
+    def __call__(self, img):
+        if isinstance(img, np.ndarray):
+            img = torch.tensor(img)
+        elif isinstance(img, Image.Image):
+            img = TF.to_tensor(img)
+        elif not isinstance(img, torch.Tensor):
+            raise TypeError(f"Input img should be PIL Image, ndarray, or tensor. Got {type(img)} instead.")
+        img = TF.convert_image_dtype(img, dtype=torch.uint8)
+        return TF.to_pil_image(img)
+
+def choose_aug(aug, args, class_counts=None):
     imsize = args["imsize"]
     a_end_tf = A.Compose(
         [
@@ -720,17 +776,20 @@ def choose_aug(aug, args):
     if aug == "none":
         tf_test = transforms.Compose(
             [
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
         tf_train = tf_test
+
+
+    
     elif aug == "torch-only-flips":
         tf_test = transforms.Compose(
             [
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -739,16 +798,16 @@ def choose_aug(aug, args):
             [
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomVerticalFlip(),
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
     elif aug == "aug-01":
         tf_test = transforms.Compose(
             [
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -779,8 +838,8 @@ def choose_aug(aug, args):
                         transforms.RandomEqualize(),
                     ]
                 ),
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -790,8 +849,8 @@ def choose_aug(aug, args):
                 transforms.ColorJitter(
                     brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1
                 ),
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -956,10 +1015,72 @@ def choose_aug(aug, args):
         )
         tf_test = lambda x: transform_test(image=np.array(x))["image"]
         tf_train = lambda x: transform_train(image=np.array(x))["image"]
+    
+    elif aug == "up-sampling":
+        if class_counts is None:
+            raise ValueError("class_counts must be provided for up-sampling augmentation")
+        
+        # Get the indices of the 5 minority classes
+        minority_classes = sorted(range(len(class_counts)), key=lambda i: class_counts[i])[:5]
+        
+        tf_aug_02 = transforms.Compose(
+            [
+                #transforms.ToTensor(),
+                transforms.Resize((imsize, imsize)),
+                ConvertToUint8(),  # Add conversion to uint8 before equalize
+                # Apply aug-02 specific transformations here...
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomVerticalFlip(),
+                transforms.RandomChoice(
+                    [
+                        transforms.GaussianBlur(kernel_size=(3, 3)),
+                        transforms.ColorJitter(brightness=0.5, hue=0.1),
+                    ]
+                ),
+                transforms.RandomChoice(
+                    [
+                        transforms.RandomRotation(degrees=(0, 360)),
+                        transforms.RandomPerspective(distortion_scale=0.1),
+                        transforms.RandomAffine(
+                            degrees=(30, 70), translate=(0.1, 0.3), scale=(0.75, 0.9)
+                        ),
+                        transforms.RandomResizedCrop(size=(imsize, imsize)),
+                    ]
+                ),
+                transforms.RandomChoice(
+                    [
+                        transforms.RandomAdjustSharpness(sharpness_factor=2),
+                        transforms.RandomAutocontrast(),
+                        transforms.RandomEqualize(),
+                    ]
+                ),
+                transforms.ToTensor(),
+                transforms.Resize((imsize, imsize)),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        
+        tf_none = transforms.Compose(
+            [
+                transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        
+        # def tf_train(image, label):
+        #     if label in minority_classes:
+        #         return tf_aug_02(image)
+        #     else:
+        #         return tf_none(image)
 
+        # tf_test = tf_none  # Use 'none' augmentation for test as per the specification
+
+        return tf_none, tf_aug_02, tf_none, minority_classes
+    #self.tf_train, tf_aug_02, self.tf_test, minority_classes
     else:
         raise ValueError(f"Invalid augmentation value {aug}")
-
+    
     return tf_test, tf_train
 
 
@@ -1057,45 +1178,45 @@ class FocalLoss(torch.nn.Module):
 
 # Define the custom loss function
 class CILoss(torch.nn.Module):
-    def __init__(self, class_counts, gamma=2.0, theta=0.5, device='cuda'):
+    def __init__(self, class_counts, k=1.0, theta=0.5, device='cuda'):
         super(CILoss, self).__init__()
-        self.gamma = gamma
+        self.k = k
         self.theta = theta
         self.device = device
         N_max = max(class_counts)
-        self.weights = torch.tensor([((N_max/ N_j) + theta) for N_j in class_counts], dtype=torch.float).to(device)
+        # Convert class_counts to a tensor
+        class_counts_tensor = torch.tensor(class_counts, dtype=torch.float).to(device)
+        # Corrected weights calculation
+        #self.weights = torch.tensor([torch.log((N_max / N_j) + theta) for N_j in class_counts], dtype=torch.float).to(device)
+        self.weights = torch.log((N_max / class_counts_tensor) + theta)
 
     def forward(self, inputs, targets):
         # Ensure targets is of type torch.long for indexing
         targets = targets.long()
-
         # Convert inputs to softmax probabilities
         probs = F.softmax(inputs, dim=1)
-        
         # Sort weights according to the target order
         sorted_weights = self.weights[targets]
-        """
-        # Create a tensor of weights based on target indices
-        weights = self.weights[targets]"""
-        #print("The value of sorted weights in CI loss is: ", sorted_weights)
         # Calculate the log of probabilities
         log_probs = torch.log(probs)
         # Gather the log probabilities for each target class
         log_probs = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        # Calculate the exponent term
+        exp_term = torch.exp(-self.k * probs.gather(1, targets.unsqueeze(1)).squeeze(1))
         # Calculate the CI loss
-        loss = -sorted_weights * torch.pow((1 - probs.gather(1, targets.unsqueeze(1)).squeeze(1)), self.gamma) * log_probs
+        loss = -sorted_weights * exp_term * log_probs
         return loss.mean()
 
 
 
 
-def choose_criterion(name, class_counts=None, n_classes=None, gamma=2.0, theta=0.5, device='cuda'):
+def choose_criterion(name, class_counts=None, n_classes=None, k=1.0, gamma=2.0, theta=0.5, device='cuda'):
     if name == "cross-entropy":
         return cross_entropy
     elif name == "class-imbalance":
         if class_counts is None:
             raise ValueError("class_counts must be provided for class-imbalance loss")
-        return CILoss(class_counts, gamma=gamma, theta=theta, device=device)
+        return CILoss(class_counts, k=k, theta=theta, device=device)
     elif name == "focal":
         # Note: Adjust alpha and gamma as per your requirement
         return FocalLoss(class_counts, num_classes=n_classes, gamma=gamma)
@@ -1161,6 +1282,7 @@ class LitModule(pl.LightningModule):
         lr: float = 1e-4,
         label_transform=None,
         class_counts=None,  # Add this parameter
+        k=1.0,
         gamma=2.0,         # Add this parameter
         theta=0.5,         # Add this parameter
         device='cuda',     # Add this parameter
@@ -1192,7 +1314,7 @@ class LitModule(pl.LightningModule):
         )
         self.lr = lr
         self.label_transform = label_transform
-        self.criterion = choose_criterion(criterion, class_counts, n_classes, gamma, theta, device)
+        self.criterion = choose_criterion(criterion, class_counts, n_classes, k,  gamma, theta, device)
         self.opt_args = opt
 
         if criterion in ["cross-entropy", "class-imbalance", "focal"]:

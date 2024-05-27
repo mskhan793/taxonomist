@@ -184,12 +184,20 @@ def print_fewest_classes_info(df, class_counts, confusion_matrix):
     fewest_samples_classes = class_counts.nsmallest(10).index.tolist()
 
     print("Fewest Samples Classes Information:")
+    fewest_classes_info = []
     for cls in fewest_samples_classes:
         class_index = np.where(unique_classes == cls)[0][0]  # Accurate index retrieval
         total_samples = class_counts.loc[cls]
         correctly_classified = confusion_matrix[class_index, class_index]
         print(f"Class: {cls}, Total Samples: {total_samples}, Correctly Classified: {correctly_classified}")
+        fewest_classes_info.append({
+            "Class": cls,
+            "Total Samples": total_samples,
+            "Correctly Classified": correctly_classified
+        })
 
+    df_fewest_classes_info = pd.DataFrame(fewest_classes_info)
+    return df_fewest_classes_info
 
 
 if __name__ == "__main__":
@@ -322,11 +330,11 @@ if __name__ == "__main__":
     # Calculate class counts
     class_counts_minor = df['y_true'].value_counts()
 
-    # Now print fewest classes info 
-    print_fewest_classes_info(df, class_counts_minor, cm)
-
-    # Write the DataFrame to a CSV file
-    df_fewest_classes_info.to_csv('fewest_classes_info.csv', index=False)
+    # Now print fewest classes info and save to CSV
+    df_fewest_classes_info = print_fewest_classes_info(df, class_counts_minor, cm)
+    fewest_classes_info_out_fname = out_folder / f"{args.out_prefix}_{csv_stem}_fewest_classes_info.csv"
+    df_fewest_classes_info.to_csv(fewest_classes_info_out_fname, index=False)
+    print(f"Saved fewest classes info to {fewest_classes_info_out_fname}")
     """
     #For 5 least miniority classes
 
