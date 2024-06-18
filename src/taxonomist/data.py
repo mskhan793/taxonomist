@@ -64,7 +64,8 @@ class Dataset(torch.utils.data.Dataset):
         else:
             y = None
         batch = {"x": X, "y": y, "fname": str(self.filenames[index])}
-        return batch
+        #return batch
+        return X, y
 
     def __readfile(self, index):
         """Actual loading of the item"""

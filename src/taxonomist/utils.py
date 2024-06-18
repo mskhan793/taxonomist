@@ -13,6 +13,34 @@ import timm
 import torch
 import torchvision
 
+def encode_labels(labels, label_to_index):
+    """
+    Encode labels according to the provided mapping.
+
+    Args:
+        labels (list): List of labels to encode.
+        label_to_index (dict): Mapping from label names to indices.
+
+    Returns:
+        list: List of encoded labels.
+    """
+    return [label_to_index[label] for label in labels]
+
+def calculate_class_counts(encoded_labels, num_classes):
+    """
+    Calculate class counts from encoded labels.
+
+    Args:
+        encoded_labels (list of int): List containing encoded class labels as integers.
+        num_classes (int): Total number of classes.
+
+    Returns:
+        list: List of counts for each class.
+    """
+    counts = [0] * num_classes
+    for label in encoded_labels:
+        counts[label] += 1
+    return counts
 
 def load_continuous_transform(name: str):
     """

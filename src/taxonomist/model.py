@@ -31,6 +31,112 @@ def cross_entropy(output, target):
     return loss
 
 
+#alphas for Focal loss
+def calculate_alpha(class_counts, num_classes):
+    # Calculate alpha values based on class_counts here
+    # For example, inverse frequency or any other method
+    inverse_frequency = [1.0 / count for count in class_counts]
+    # Normalize if necessary
+    sum_inv_freq = sum(inverse_frequency)
+    alpha = [inv_freq / sum_inv_freq for inv_freq in inverse_frequency]
+    # Ensure the length matches the number of classes
+    if len(alpha) != num_classes:
+        raise ValueError("Length of alpha does not match number of classes")
+    return alpha
+
+class FocalLoss(torch.nn.Module):
+    def __init__(self, class_counts, gamma=2.0, reduction='mean', num_classes=None):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        if num_classes is None:
+            raise ValueError("num_classes must be set when alpha is not provided")
+        
+        alpha = calculate_alpha(class_counts, num_classes=num_classes)
+        if not isinstance(alpha, torch.Tensor):
+            alpha = torch.tensor(alpha)
+        
+        if hasattr(self, 'alpha'):
+            # Update the alpha buffer if it already exists
+            self.alpha = alpha
+        else:
+            # Register alpha as a buffer if it doesn't exist
+            self.register_buffer('alpha', alpha)
+
+    def forward(self, inputs, targets):
+        # Ensure targets are of the correct type for indexing
+        targets = targets.long()
+        
+        CE_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-CE_loss)
+        
+        # Now targets is guaranteed to be of a type suitable for indexing
+        alpha_t = self.alpha[targets]
+        print("The value of alpha inside focal loss is: ", alpha_t)
+        loss = alpha_t * ((1 - pt) ** self.gamma) * CE_loss
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
+
+# Define the custom loss function
+class CILoss(torch.nn.Module):
+    def __init__(self, class_counts, gamma=2.0, theta=0.5, device='cuda'):
+        super(CILoss, self).__init__()
+        self.gamma = gamma
+        self.theta = theta
+        self.device = device
+        N_max = max(class_counts)
+        self.weights = torch.tensor([((N_max/ N_j) + theta) for N_j in class_counts], dtype=torch.float).to(device)
+
+    def forward(self, inputs, targets):
+        # Ensure targets is of type torch.long for indexing
+        targets = targets.long()
+
+        # Convert inputs to softmax probabilities
+        probs = F.softmax(inputs, dim=1)
+        
+        # Sort weights according to the target order
+        sorted_weights = self.weights[targets]
+        """
+        # Create a tensor of weights based on target indices
+        weights = self.weights[targets]"""
+        #print("The value of sorted weights in CI loss is: ", sorted_weights)
+        # Calculate the log of probabilities
+        log_probs = torch.log(probs)
+        # Gather the log probabilities for each target class
+        log_probs = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        # Calculate the CI loss
+        loss = -sorted_weights * torch.pow((1 - probs.gather(1, targets.unsqueeze(1)).squeeze(1)), self.gamma) * log_probs
+        return loss.mean()
+
+
+
+
+def choose_criterion(name, class_counts=None, n_classes=None, gamma=2.0, theta=0.5, device='cuda'):
+    if name == "cross-entropy":
+        return cross_entropy
+    elif name == "mse":
+        return mse
+    elif name == "mape":
+        return mape
+    elif name == "l1":
+        return l1
+    elif name == "class-imbalance":
+        if class_counts is None:
+            raise ValueError("class_counts must be provided for class-imbalance loss")
+        return CILoss(class_counts, gamma=gamma, theta=theta, device=device)
+    elif name == "focal":
+        # Note: Adjust alpha and gamma as per your requirement
+        return FocalLoss(class_counts, num_classes=n_classes, gamma=gamma)
+    else:
+        raise Exception(f"Invalid criterion name '{name}'")
+
+
 def choose_criterion(name):
     if name == "cross-entropy":
         return cross_entropy
@@ -102,6 +208,10 @@ class LitModule(pl.LightningModule):
         lr: float = 1e-4,
         lr_scheduler: dict = None,
         label_transform=None,
+        class_counts=None,  # Add this parameter
+        gamma=2.0,         # Add this parameter
+        theta=0.5,         # Add this parameter
+        device='cuda',     # Add this parameter
     ):
         """Initialize the module
         Args:
@@ -131,10 +241,10 @@ class LitModule(pl.LightningModule):
         self.lr = lr
         self.lr_scheduler = lr_scheduler
         self.label_transform = label_transform
-        self.criterion = choose_criterion(criterion)
+        self.criterion = choose_criterion(criterion, class_counts, n_classes, gamma, theta, device)
         self.opt_args = opt
 
-        if criterion == "cross-entropy":
+        if criterion in ["cross-entropy", "class-imbalance", "focal"]:
             self.is_classifier = True
         else:
             self.is_classifier = False
