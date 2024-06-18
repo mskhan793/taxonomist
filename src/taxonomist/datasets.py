@@ -30,6 +30,11 @@ def preprocess_dataset(data_folder, dataset_name, csv_path=None, fold=None, labe
                 data_folder, csv_path, set_, fold, label
             )
 
+        elif dataset_name == "moss":
+            fnames[set_], labels[set_] = process_split_csv_mos(
+                data_folder, csv_path, set_, fold, label
+            )
+
         elif dataset_name == "my_dataset":
             """
 
@@ -99,8 +104,8 @@ def process_split_csv_cifar10(data_folder, csv_path, set_, fold, label):
 
     fnames = df["Filename"].apply(lambda x: data_folder.resolve() / x).values
 
-    # Print file paths for debugging
-    print("File paths:", fnames)
+    # # Print file paths for debugging
+    # print("File paths:", fnames)
 
     # Check if the files exist
     for fname in fnames:
@@ -111,84 +116,53 @@ def process_split_csv_cifar10(data_folder, csv_path, set_, fold, label):
     return fnames, labels
 
 
-# def process_split_csv_cifar10(data_folder, csv_path, set_, fold, label):
-#     "CIFAR10-specific function for reading train-test-split csvs"
+# def process_split_csv_mos(data_folder, csv_path, set_, fold, label):
+#     "CIFAR10 -specific function for reading train-test-split csvs"
 #     df0 = pd.read_csv(csv_path)
-    
-#     # Check if the column named with the fold value exists
-#     fold_column = f"split_{fold}"
-#     if fold_column not in df0.columns:
-#         raise ValueError(f"Column '{fold_column}' not found in DataFrame")
+#     df = df0[df0[str(fold)] == set_]
+   
+#     # fnames = df.apply(
+#     #     lambda x: Path(data_folder, "images", x["Label"], x["ImageName"]).resolve(),
+#     #     axis=1,
+#     # ).values
 
-#     # Filter DataFrame based on fold and set_
-#     df = df0[df0[fold_column] == set_]
 
-#     # Check if the set_ values exist in the fold column
-#     if df.empty:
-#         raise ValueError(f"No data found for fold '{fold_column}' and set '{set_}'")
+#     fnames = []
+#     for _, row in df.iterrows():
+#         path = Path(data_folder, "images", row["Label"], row["ImageName"]).resolve()
+#         print(path)
+#         fnames.append(path)
 
-#     # Construct file paths
-#     fnames = df.apply(lambda x: data_folder.resolve() / str(x["ID"]) / x["Filename"], axis=1).values
-
-#     # Print file paths for debugging
+#     #Print file paths for debugging
+#     #print("The path is: ", pp)
 #     print("File paths:", fnames)
 
-#     # Check if the files exist
 #     for fname in fnames:
-#         assert fname.exists(), f"File '{fname}' does not exist"  # Add informative message
+#         assert fname.exists()
 
 #     labels = df[label].values
 
 #     return fnames, labels
 
-
-
-# def process_split_csv_cifar10(data_folder, csv_path, set_, fold, label):
-#     "CIFAR10-specific function for reading train-test-split csvs"
-#     df0 = pd.read_csv(csv_path)
-    
-#     # Check if the column named with the fold value exists
-#     fold_column = f"{fold}"
-#     if fold_column not in df0.columns:
-#         raise ValueError(f"Column '{fold_column}' not found in DataFrame")
-
-#     # Filter DataFrame based on fold and set_
-#     df = df0[df0[fold_column] == set_]
-
-#     # Check if the set_ values exist in the fold column
-#     if df.empty:
-#         raise ValueError(f"No data found for fold '{fold_column}' and set '{set_}'")
-
-#     # Construct file paths
-#     #fnames = df["Filename"].apply(lambda x: data_folder.resolve() / "Images" / x).values
-#     fnames = df["Filename"].apply(lambda x: data_folder.resolve() / x).values
-
-#     # Print file paths for debugging
-#     print("File paths:", fnames)
-
-#     # Check if the files exist
-#     for fname in fnames:
-#         assert fname.exists(), f"File '{fname}' does not exist"  # Add informative message
-
-#     labels = df[label].values
-
-#     return fnames, labels
-
-
-
-
-
-
-def process_split_csv_cifar10(data_folder, csv_path, set_, fold, label):
-    "CIFAR10 -specific function for reading train-test-split csvs"
+def process_split_csv_mos(data_folder, csv_path, set_, fold, label):
+    "MOS-specific function for reading train-test-split csvs"
     df0 = pd.read_csv(csv_path)
     df = df0[df0[str(fold)] == set_]
+   
+    fnames = []
+    for _, row in df.iterrows():
+        path = Path(data_folder, row["Label"], row["ImageName"]).resolve()
+        #print(f"Checking path: {path}")  # Debugging statement
+        if not path.exists():
+            print(f"Path does not exist: {path}")  # Error identification
+        fnames.append(path)
 
-    fnames = df["Filename"].apply(lambda x: data_folder.resolve() / x).values
+    #print("File paths:", fnames)
 
     for fname in fnames:
-        assert fname.exists()
+        assert fname.exists(), f"File '{fname}' does not exist"  # Detailed error message
 
     labels = df[label].values
 
     return fnames, labels
+

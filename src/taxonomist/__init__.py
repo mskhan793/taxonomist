@@ -539,7 +539,7 @@ class LitDataModule(pl.LightningDataModule):
 
         self.aug_args = {"imsize": imsize}
 
-        self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
+        #self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
 
     def setup(self, stage=None):
         fnames, labels = preprocess_dataset(
@@ -586,8 +586,11 @@ class LitDataModule(pl.LightningDataModule):
             # self.class_counts = calculate_class_counts(labels_encoded, num_classes)
             # print(self.class_counts)
 
-            if self.aug == "up-sampling":
+            if self.aug.startswith("up-sampling"):
                 self.tf_train, tf_aug_02, self.tf_test, minority_classes = choose_aug(self.aug, self.aug_args, class_counts=self.class_counts)
+
+                # Determine the upsampling factor from the augmentation string
+                upsample_factor = int(self.aug.split("up-sampling")[-1]) if self.aug[-1].isdigit() else 4  # Default to 4 if no digit is found
 
                 # Upsample minority classes
                 upsampled_fnames = []
@@ -598,7 +601,7 @@ class LitDataModule(pl.LightningDataModule):
                     upsampled_labels.append(encoded_label)
                     upsampled_original_labels.append(original_label)
                     if encoded_label in minority_classes:
-                        for _ in range(5):  # Adjust this number to control the amount of upsampling
+                        for _ in range(upsample_factor):  # Adjust this number to control the amount of upsampling
                             upsampled_fnames.append(fname)
                             upsampled_labels.append(encoded_label)
                             upsampled_original_labels.append(original_label)
@@ -638,6 +641,7 @@ class LitDataModule(pl.LightningDataModule):
                     load_to_memory=self.load_to_memory,
                 )
         else:
+            self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
             if self.label_transform:
                 labels["train"] = self.label_transform(labels["train"])
             self.trainset = Dataset(
@@ -1016,12 +1020,12 @@ def choose_aug(aug, args, class_counts=None):
         tf_test = lambda x: transform_test(image=np.array(x))["image"]
         tf_train = lambda x: transform_train(image=np.array(x))["image"]
     
-    elif aug == "up-sampling":
+    elif aug.startswith("up-sampling"):
         if class_counts is None:
             raise ValueError("class_counts must be provided for up-sampling augmentation")
         
         # Get the indices of the 5 minority classes
-        minority_classes = sorted(range(len(class_counts)), key=lambda i: class_counts[i])[:5]
+        minority_classes = sorted(range(len(class_counts)), key=lambda i: class_counts[i])[:1]
         
         tf_aug_02 = transforms.Compose(
             [
@@ -1034,7 +1038,7 @@ def choose_aug(aug, args, class_counts=None):
                 transforms.RandomChoice(
                     [
                         transforms.GaussianBlur(kernel_size=(3, 3)),
-                        transforms.ColorJitter(brightness=0.5, hue=0.1),
+                        #transforms.ColorJitter(brightness=0.5, hue=0.1), #changes brightness and hue.
                     ]
                 ),
                 transforms.RandomChoice(
@@ -1049,8 +1053,8 @@ def choose_aug(aug, args, class_counts=None):
                 ),
                 transforms.RandomChoice(
                     [
-                        transforms.RandomAdjustSharpness(sharpness_factor=2),
-                        transforms.RandomAutocontrast(),
+                        #transforms.RandomAdjustSharpness(sharpness_factor=2), #modify the image sharpness
+                        #transforms.RandomAutocontrast(),      #modify the image contrast.
                         transforms.RandomEqualize(),
                     ]
                 ),

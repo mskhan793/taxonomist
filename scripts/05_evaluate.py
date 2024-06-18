@@ -161,7 +161,7 @@ def calc_bootstrap(df, n_repeats, alpha=0.95):
         bs = df.sample(n=len(df), replace=True)
         return calc_metrics(bs)
 
-    bs_value_list = Parallel(n_jobs=4)(
+    bs_value_list = Parallel(n_jobs=20)(
         delayed(_bootstrap)(df) for _ in tqdm(range(n_repeats))
     )
 
