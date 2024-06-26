@@ -14,6 +14,10 @@ def quantile_mean(series):
     q95 = series.quantile(0.95)
     return series[(q5 <= series) & (series <= q95)].mean()
 
+def mode(series):
+    """Returns the mode of the series"""
+    return pd.Series.mode(series)[0]
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
@@ -68,24 +72,42 @@ if __name__ == "__main__":
     # Grouping
     group_df = comb_df.groupby(args.reference_group)[["y_true", "y_pred"]]
 
-    if args.agg_func == "mode":
 
-        def agg_func(x):
-            return pd.Series.mode(x)[0]
+        # Mapping aggregation functions
+    agg_functions = {
+        "mode": mode,
+        "quantile_mean": quantile_mean,
+        "mean": "mean",
+        "sum": "sum",
+        "min": "min",
+        "max": "max",
+        "median": "median",
+        "std": "std",
+        "var": "var"
+    }
 
-    if args.agg_func == "quantile_mean":
-        agg_func = quantile_mean
+    # Get the aggregation function
+    agg_func = agg_functions.get(args.agg_func, args.agg_func)
 
-    else:
-        agg_func = args.agg_func
+    # if args.agg_func == "mode":
+    #     agg_func = mode
+
+    #     # def agg_func(x):
+    #     #     return pd.Series.mode(x)[0]
+
+    # if args.agg_func == "quantile_mean":
+    #     agg_func = quantile_mean
+
+    # else:
+    #     agg_func = args.agg_func
 
     group_df = group_df.agg(agg_func)
     print(f"Grouped {len(df)} rows to {len(group_df)} groups")
 
     if args.around:
         print(f"Rounding values to {args.around} decimals")
-        group_df = group_df.map(lambda x: np.around(x, args.around))
-
+        #group_df = group_df.map(lambda x: np.around(x, args.around))
+        group_df = group_df.applymap(lambda x: np.around(x, args.around))
     out_name = out_folder / f"{csv_stem}_grouped.csv"
     group_df.to_csv(out_name)
     print(f"Saved to {out_name}")

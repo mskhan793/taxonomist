@@ -8,6 +8,14 @@ import sklearn.metrics
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
+import argparse
+
+import sklearn.metrics
+
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, balanced_accuracy_score,multilabel_confusion_matrix, confusion_matrix, matthews_corrcoef
+from sklearn.preprocessing import LabelBinarizer
+from imblearn.metrics import geometric_mean_score
+import os
 
 DESCRIPTION = """
 Calculates metrics to prediction outputs.
@@ -24,7 +32,7 @@ for
     full cv predictions
     each fold separately
 """
-
+lb = LabelBinarizer()
 
 def load_metric(metric):
     # Regression
@@ -98,6 +106,58 @@ def load_metric(metric):
         return lambda y, yhat: sklearn.metrics.f1_score(
             y, yhat, average="weighted", zero_division=False
         )
+    elif metric == "roc_auc":
+        # Return a function that calculates ROC AUC when called
+        def roc_auc_func(y_true, y_pred):
+            y_true_encoded = lb.fit_transform(y_true)
+            y_pred_encoded = lb.transform(y_pred)
+            if y_true_encoded.shape[1] == 1:
+                # Binary classification
+                return roc_auc_score(y_true_encoded, y_pred_encoded[:, 1])
+            else:
+                # Multiclass classification
+                return roc_auc_score(y_true_encoded, y_pred_encoded, average='macro', multi_class='ovo')
+        return roc_auc_func
+
+    elif metric == "g_mean":
+        return lambda y, yhat: geometric_mean_score(y, yhat, average='macro')
+
+    elif metric == "bacc":
+        return lambda y, yhat: balanced_accuracy_score(y, yhat)
+
+    # elif metric == "mcc":
+    #     def mcc_multiclass(y_true, y_pred):
+    #         """Compute the Matthews correlation coefficient for multiclass problems."""
+    #         mcm = multilabel_confusion_matrix(y_true, y_pred)
+    #         mccs = []
+
+    #         for i in range(len(mcm)):
+    #             tn, fp, fn, tp = mcm[i].ravel()
+    #             # Calculate MCC for each class and handle edge cases
+    #             #with np.errstate(over='ignore', invalid='ignore'):
+    #             mcc_num = (tp * tn) - (tp * fn)
+    #             mcc_den = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    #             if np.isfinite(mcc_den) and mcc_den != 0:
+    #                 mcc = mcc_num / mcc_den
+    #             else:
+    #                 mcc = 0
+    #             mccs.append(mcc)
+            
+    #         # Calculate the mean MCC across all classes and ensure it is within [-1, 1]
+    #         mcc_mean = np.mean(mccs)
+    #         #mcc_mean = max(min(mcc_mean, 1), -1)
+    #         return mcc_mean
+    #     return mcc_multiclass
+
+    elif metric == "mcc":
+        return matthews_corrcoef
+
+    elif metric == "iou":
+        return iou_multiclass
+
+    elif metric == "dsc":
+        return dsc_multiclass
+
 
 
 def calc_metrics(df):
@@ -115,7 +175,7 @@ def calc_bootstrap(df, n_repeats, alpha=0.95):
         bs = df.sample(n=len(df), replace=True)
         return calc_metrics(bs)
 
-    bs_value_list = Parallel(n_jobs=4)(
+    bs_value_list = Parallel(n_jobs=10)(
         delayed(_bootstrap)(df) for _ in tqdm(range(n_repeats))
     )
 
@@ -132,6 +192,63 @@ def calc_bootstrap(df, n_repeats, alpha=0.95):
         bs_errors[metric]["std"] = std
 
     return bs_errors, bs_values
+
+def print_fewest_classes_info(df, class_counts, confusion_matrix):
+    # Get unique classes in the order they appear in the confusion matrix
+    unique_classes = np.unique(df['y_true'])
+    fewest_samples_classes = class_counts.nsmallest(10).index.tolist()
+
+    print("Fewest Samples Classes Information:")
+    fewest_classes_info = []
+    for cls in fewest_samples_classes:
+        class_index = np.where(unique_classes == cls)[0][0]  # Accurate index retrieval
+        total_samples = class_counts.loc[cls]
+        correctly_classified = confusion_matrix[class_index, class_index]
+        print(f"Class: {cls}, Total Samples: {total_samples}, Correctly Classified: {correctly_classified}")
+        fewest_classes_info.append({
+            "Class": cls,
+            "Total Samples": total_samples,
+            "Correctly Classified": correctly_classified
+        })
+
+    df_fewest_classes_info = pd.DataFrame(fewest_classes_info)
+    return df_fewest_classes_info
+
+def iou_multiclass(y_true, y_pred):
+    """Compute the Intersection over Union (IoU) for multiclass problems."""
+    mcm = multilabel_confusion_matrix(y_true, y_pred)
+    ious = []
+
+    for i in range(len(mcm)):
+        tn, fp, fn, tp = mcm[i].ravel()
+        #with np.errstate(over='ignore', invalid='ignore'):
+        iou_den = (2 * tp + fp + fn)
+        if np.isfinite(iou_den) and iou_den != 0:
+            iou = 2 * tp / iou_den
+        else:
+            iou = 0
+        ious.append(iou)
+    
+    iou_mean = np.mean(ious)
+    return iou_mean
+
+def dsc_multiclass(y_true, y_pred):
+    """Compute the Dice Similarity Coefficient (DSC) for multiclass problems."""
+    mcm = multilabel_confusion_matrix(y_true, y_pred)
+    dscs = []
+
+    for i in range(len(mcm)):
+        tn, fp, fn, tp = mcm[i].ravel()
+        #with np.errstate(over='ignore', invalid='ignore'):
+        dsc_den = (tp + fp + fn)
+        if np.isfinite(dsc_den) and dsc_den != 0:
+            dsc = tp / dsc_den
+        else:
+            dsc = 0
+        dscs.append(dsc)
+    
+    dsc_mean = np.mean(dscs)
+    return dsc_mean
 
 
 if __name__ == "__main__":
@@ -154,12 +271,23 @@ if __name__ == "__main__":
 
     csv_path = Path(args.predictions)
 
+    # Ensure out_folder is defined at this point
+    csv_stem = csv_path.stem
+    out_folder = csv_path.parents[1] / "metrics"
+    out_folder.mkdir(exist_ok=True, parents=True)
+
     # Load metric config
     conf = OmegaConf.load(args.metric_config)
     print(OmegaConf.to_yaml(conf))
 
     # Load predictions and calculate metrics
     df = pd.read_csv(csv_path)
+
+    # Ensure consistent classes in y_true and y_pred
+    unique_classes = np.union1d(df['y_true'].unique(), df['y_pred'].unique())
+    df['y_true'] = pd.Categorical(df['y_true'], categories=unique_classes)
+    df['y_pred'] = pd.Categorical(df['y_pred'], categories=unique_classes)
+
     values = calc_metrics(df)
     if not args.no_bootstrap:
         bs_errors, bs_values = calc_bootstrap(
@@ -198,6 +326,12 @@ if __name__ == "__main__":
             idx = ref_df[ref_df[str(fold)] == "test"].index.values
             df_fold = df.iloc[idx]
 
+            # Ensure consistent classes in y_true and y_pred for each fold
+            unique_classes_fold = np.union1d(df_fold['y_true'].unique(), df_fold['y_pred'].unique())
+            df_fold['y_true'] = pd.Categorical(df_fold['y_true'], categories=unique_classes_fold)
+            df_fold['y_pred'] = pd.Categorical(df_fold['y_pred'], categories=unique_classes_fold)
+
+
             values = calc_metrics(df_fold)
             if not args.no_bootstrap:
                 bs_errors, _ = calc_bootstrap(
@@ -235,3 +369,64 @@ if __name__ == "__main__":
         out_fname = out_folder / f"{args.out_prefix}_{csv_stem}.csv"
         results.to_csv(out_fname, index=False)
         print(f"Saved to {out_fname}")
+
+# Code for classes with fewest samples
+
+class_counts = df['y_true'].value_counts()
+fewest_samples_classes = class_counts.nsmallest(10).index.tolist()
+df_fewest_samples = df[df['y_true'].isin(fewest_samples_classes)]
+fewest_samples_values = calc_metrics(df_fewest_samples)
+fewest_samples_results = pd.DataFrame({
+    "metric": metric_name,
+    "value": metric_value
+} for metric_name, metric_value in fewest_samples_values.items())
+
+fewest_samples_out_fname = out_folder / f"{args.out_prefix}_{csv_stem}_minor_classes.csv"
+fewest_samples_results.to_csv(fewest_samples_out_fname, index=False)
+print(f"Saved minor classes metrics to {fewest_samples_out_fname}")
+
+
+# Calculate the confusion matrix with sorted unique labels
+unique_classes = np.sort(df['y_true'].unique())
+y_true = df['y_true'].apply(lambda x: np.where(unique_classes == x)[0][0]).tolist()
+y_pred = df['y_pred'].apply(lambda x: np.where(unique_classes == x)[0][0]).tolist()
+cm = confusion_matrix(y_true, y_pred, labels=range(len(unique_classes)))  # Specify labels explicitly
+
+# Calculate class counts
+class_counts_minor = df['y_true'].value_counts()
+
+# Now print fewest classes info and save to CSV
+df_fewest_classes_info = print_fewest_classes_info(df, class_counts_minor, cm)
+fewest_classes_info_out_fname = out_folder / f"{args.out_prefix}_{csv_stem}_fewest_classes_info.csv"
+df_fewest_classes_info.to_csv(fewest_classes_info_out_fname, index=False)
+print(f"Saved fewest classes info to {fewest_classes_info_out_fname}")
+"""
+#For 5 least miniority classes
+
+# Assuming `df` contains the true labels in a column named 'y_true'
+
+#Step 1
+# Count the number of samples per class
+class_counts = df['y_true'].value_counts()
+
+# Get the 5 classes with the fewest samples
+fewest_samples_classes = class_counts.nsmallest(5).index.tolist()
+
+#STEP 2
+# Filter the dataframe for rows where the class is one of the five with the fewest samples
+df_fewest_samples = df[df['y_true'].isin(fewest_samples_classes)]
+
+# Calculate metrics only for the filtered dataframe
+fewest_samples_values = calc_metrics(df_fewest_samples)
+
+#STEP 3
+fewest_samples_results = pd.DataFrame({
+    "metric": metric_name,
+    "value": metric_value
+} for metric_name, metric_value in fewest_samples_values.items())
+
+fewest_samples_out_fname = out_folder / f"{args.out_prefix}_{csv_stem}_minor_classes.csv"
+fewest_samples_results.to_csv(fewest_samples_out_fname, index=False)
+print(f"Saved minor classes metrics to {fewest_samples_out_fname}")
+#END
+"""

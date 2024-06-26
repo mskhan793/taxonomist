@@ -79,6 +79,11 @@ class TaxonomistModelArguments:
     log_every_n_steps: Optional[int] = 10
     suffix = None
 
+    k: float = 1.0  # Add this line
+    gamma: float = 2.0  # Add this line
+    theta: float = 0.5  # Add this line
+    device: str = 'cuda'  # Add this line
+
 
 class TaxonomistModel:
     def __init__(self, args: TaxonomistModelArguments):
@@ -89,6 +94,9 @@ class TaxonomistModel:
 
         if args.deterministic:
             pl.seed_everything(seed=args.random_state, workers=True)
+
+        # Initialize data_module here
+        self.data_module = None
 
     def _parse_uid(self):
         # It is possible to resume to an existing run that was cancelled/stopped if
@@ -173,6 +181,7 @@ class TaxonomistModel:
             aug=self.args.aug,
             load_to_memory=self.args.load_to_memory,
             tta_n=self.args.tta_n,
+            class_map_path=self.args.class_map_name  # Ensure this is correctly passed
         )
         return dm
 
@@ -190,6 +199,12 @@ class TaxonomistModel:
                 lr=self.args.lr,
                 lr_scheduler=lr_scheduler,
                 label_transform=class_map["inv"],
+                class_counts=self.data_module.class_counts,  # Pass class_counts here
+                k=self.args.k,
+                gamma=self.args.gamma,
+                theta=self.args.theta,
+                device=self.args.device,
+                total_epochs=self.args.max_epochs # Pass total_epochs here
             )
             return model
         else:
@@ -237,10 +252,12 @@ class TaxonomistModel:
         # Best model saving
         checkpoint_callback_best = ModelCheckpoint(
             monitor="val/loss",
+            mode="min",
             dirpath=out_folder,
             save_top_k=self.args.save_top_k,
             filename=f"{self.outname}_" + "epoch{epoch:02d}_val-loss{val/loss:.2f}",
             auto_insert_metric_name=False,
+
         )
 
         # Last model saving
@@ -330,6 +347,7 @@ class TaxonomistModel:
                 callbacks=callbacks,
                 precision=self.args.precision,
                 deterministic=self.args.deterministic,
+                gradient_clip_val=0.5,
             )
             return trainer
         else:
@@ -430,6 +448,11 @@ class TaxonomistModel:
 
         # get data module
         dm = self._create_data_module(class_map)
+
+        # Assign the data module to self.data_module here
+        self.data_module = dm
+
+        dm.setup('fit')  # Ensure setup is called to populate class_counts
 
         # create lr scheduler
         lr_scheduler = self._create_lr_scheduler()

@@ -7,11 +7,13 @@ import lightning.pytorch as pl
 import numpy as np
 import pandas as pd
 import torch
+import PIL.Image as Image
+import torchvision.transforms.functional as TF
 from albumentations.pytorch.transforms import ToTensorV2
 from torchvision import transforms
-from tqdm import tqdm
+from tqdm import tqdm   
 
-from .utils import load_module_from_path, read_image, visualize_dataset
+from .utils import load_module_from_path, read_image, visualize_dataset, load_class_map, encode_labels, calculate_class_counts
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -22,7 +24,9 @@ class Dataset(torch.utils.data.Dataset):
         y: list of targets
         preload_transform: transform to apply to the PIL image after loading and before
                             loading into memory
-        transform: transform to apply to the image after loading
+        transform: transform to apply to the image after loading  
+        minority_transform: transform to apply to minority class samples
+        minority_classes: list of minority class labels
         load_to_memory: if True, the images are loaded into memory
     """
 
@@ -30,16 +34,22 @@ class Dataset(torch.utils.data.Dataset):
         self,
         filenames: list,
         y: list,
+        label_map=None,
         preload_transform=None,
         transform=None,
+        minority_transform=None,
+        minority_classes=None,
         load_to_memory=True,
     ):
         self.filenames = filenames
         self.y = y
+        self.label_map = label_map
         self.preload_transform = preload_transform
         self.transform = transform
         self.mem_dataset = None
-
+        self.minority_transform = minority_transform
+        self.minority_classes = minority_classes
+        self.mem_dataset = None
         if load_to_memory:
             self.mem_dataset = []
             print("Loading dataset to memory...")
@@ -57,15 +67,26 @@ class Dataset(torch.utils.data.Dataset):
             X = self.__readfile(index)
 
         if self.transform:
-            X = self.transform(X)
+            if self.minority_classes is not None and self.y[index] in self.minority_classes:
+                X = self._apply_transform(X, self.minority_transform)
+            else:
+                X = self._apply_transform(X, self.transform)
 
         if self.y is not None:
             y = torch.as_tensor(self.y[index], dtype=torch.float32)
         else:
             y = None
         batch = {"x": X, "y": y, "fname": str(self.filenames[index])}
-        #return batch
-        return X, y
+        return batch
+        #return X, y
+
+    def _apply_transform(self, img, transform):
+        if isinstance(img, torch.Tensor):
+            img = TF.to_pil_image(img)
+        img = transform(img)
+        if isinstance(img, Image.Image):
+            img = TF.to_tensor(img)
+        return img
 
     def __readfile(self, index):
         """Actual loading of the item"""
@@ -114,6 +135,7 @@ class LitDataModule(pl.LightningDataModule):
         label_transform=None,
         load_to_memory: bool = False,
         tta_n: int = 5,
+        class_map_path: str = None,
     ):
         super().__init__()
         self.data_folder = data_folder
@@ -132,13 +154,18 @@ class LitDataModule(pl.LightningDataModule):
         self.load_to_memory = load_to_memory
         self.tta_n = tta_n
 
+        self.class_map_path = class_map_path
+
+        self.labels = {} # Initialize the labels attribute
+
         self.cpu_count = int(
             os.getenv("SLURM_CPUS_PER_TASK") or torch.multiprocessing.cpu_count()
         )
         self.drop_last = lambda x: True if len(x) % batch_size == 1 else False
 
         self.aug_args = {"imsize": imsize}
-        self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)
+        #self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)
+        self.class_counts = None  # Add this line
 
     def setup(self, stage=None):
         dataset_config_module = load_module_from_path(self.dataset_config_path)
@@ -150,19 +177,124 @@ class LitDataModule(pl.LightningDataModule):
             fold=self.fold,
             label=self.label,
         )
+        # Ensure class_map_path is correctly assigned before checking it
+        class_map_path = self.class_map_path
+        if class_map_path is None:
+            raise ValueError("class_map_path is None. Please provide a valid path.")
+
+        print(f"Loading class map from {class_map_path}")
+        class_map = load_class_map(class_map_path)
+
+        # Forward map is used to encode labels
+        label_to_index = class_map['fwd_dict']
+
+        # Encode the training labels using the forward map
+        labels_encoded = {k: encode_labels(v, label_to_index) for k, v in labels.items()}
+        self.labels_encoded = labels_encoded
+            
+        # Number of classes
+        num_classes = len(label_to_index)
+            
+        # Store the class counts
+        self.class_counts = calculate_class_counts(labels_encoded['train'], num_classes)
+
+        if stage == 'fit' or stage is None:
+            # Load the class map
+            class_map_path = self.class_map_path
+            class_map = load_class_map(class_map_path)
+
+            # Forward map is used to encode labels
+            label_to_index = class_map['fwd_dict']
+
+            # Encode the training labels using the forward map
+            labels_encoded = encode_labels(labels["train"], label_to_index)
+            self.labels_encoded = {"train": labels_encoded}
+            
+            # Number of classes
+            num_classes = len(label_to_index)
+            
+            # Store the class counts
+            self.class_counts = calculate_class_counts(labels_encoded, num_classes)
+            # #   print(self.class_counts)
+
+            if self.aug.startswith("up-sampling"):
+                self.tf_train, tf_aug_02, self.tf_test, minority_classes = choose_aug(self.aug, self.aug_args, class_counts=self.class_counts)
+
+                # Determine the upsampling factor from the augmentation string
+                upsample_factor = int(self.aug.split("up-sampling")[-1]) if self.aug[-1].isdigit() else 4  # Default to 4 if no digit is found
+
+                # Upsample minority classes
+                upsampled_fnames = []
+                upsampled_labels = []
+                upsampled_original_labels = []
+                for fname, encoded_label, original_label in zip(fnames["train"], labels_encoded["train"], labels["train"]):
+                    upsampled_fnames.append(fname)
+                    upsampled_labels.append(encoded_label)
+                    upsampled_original_labels.append(original_label)
+                    if encoded_label in minority_classes:
+                        for _ in range(upsample_factor):  # Adjust this number to control the amount of upsampling
+                            upsampled_fnames.append(fname)
+                            upsampled_labels.append(encoded_label)
+                            upsampled_original_labels.append(original_label)
+                fnames["train"] = upsampled_fnames
+                labels_encoded["train"] = upsampled_labels
+                labels["train"] = upsampled_original_labels
+
+                if self.label_transform:
+                    labels["train"] = self.label_transform(labels["train"])
+                #     labels["val"] = self.label_transform(labels["val"])
+                #     labels["test"] = self.label_transform(labels["test"])
+
+                self.trainset = Dataset(
+                    fnames["train"],
+                    labels["train"],
+                    preload_transform=None,
+                    transform=self.tf_train,
+                    minority_transform=tf_aug_02,
+                    minority_classes=minority_classes,
+                    load_to_memory=self.load_to_memory,
+                )
+                
+                #self.tf_test = tf_test
+            else:
+                self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
+
+                if self.label_transform:
+                    labels["train"] = self.label_transform(labels["train"])
+                #     labels["val"] = self.label_transform(labels["val"])
+                #     labels["test"] = self.label_transform(labels["test"])
+
+                self.trainset = Dataset(
+                    fnames["train"],
+                    labels["train"],
+                    preload_transform=None,
+                    transform=self.tf_train,
+                    load_to_memory=self.load_to_memory,
+                )
+        else:
+            self.tf_test, self.tf_train = choose_aug(self.aug, self.aug_args)[:2]
+            if self.label_transform:
+                labels["train"] = self.label_transform(labels["train"])
+            self.trainset = Dataset(
+                    fnames["train"],
+                    labels["train"],
+                    preload_transform=None,
+                    transform=self.tf_train,
+                    load_to_memory=self.load_to_memory,
+                )
 
         if self.label_transform:
-            labels["train"] = self.label_transform(labels["train"])
+            #labels["train"] = self.label_transform(labels["train"])
             labels["val"] = self.label_transform(labels["val"])
             labels["test"] = self.label_transform(labels["test"])
 
-        self.trainset = Dataset(
-            fnames["train"],
-            labels["train"],
-            preload_transform=None,
-            transform=self.tf_train,
-            load_to_memory=self.load_to_memory,
-        )
+        # self.trainset = Dataset(
+        #     fnames["train"],
+        #     labels["train"],
+        #     preload_transform=None,
+        #     transform=self.tf_train,
+        #     load_to_memory=self.load_to_memory,
+        # )
 
         self.valset = Dataset(
             fnames["val"],
@@ -250,8 +382,18 @@ class LitDataModule(pl.LightningDataModule):
         visualize_dataset(self.testset, v=False, name=folder / f"{_now}-test.jpg")
 
 
-def choose_aug(aug, args):
-    """Select data augmentation transformations based on the provided augmentation scheme."""
+class ConvertToUint8:
+    def __call__(self, img):
+        if isinstance(img, np.ndarray):
+            img = torch.tensor(img)
+        elif isinstance(img, Image.Image):
+            img = TF.to_tensor(img)
+        elif not isinstance(img, torch.Tensor):
+            raise TypeError(f"Input img should be PIL Image, ndarray, or tensor. Got {type(img)} instead.")
+        img = TF.convert_image_dtype(img, dtype=torch.uint8)
+        return TF.to_pil_image(img)
+
+def choose_aug(aug, args, class_counts=None):
     imsize = args["imsize"]
     a_end_tf = A.Compose(
         [
@@ -271,69 +413,20 @@ def choose_aug(aug, args):
     if aug == "none":
         tf_test = transforms.Compose(
             [
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
         tf_train = tf_test
 
-    elif aug == "trivialaugment":
-        tf_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Resize((imsize, imsize)),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
-        tf_train = transforms.Compose(
-            [
-                transforms.Resize((imsize, imsize)),
-                transforms.TrivialAugmentWide(),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
 
-    elif aug == "trivialaugment-noresize":
-        # No resizing during training. Assumes images are the right size
-        tf_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Resize((imsize, imsize)),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
-        tf_train = transforms.Compose(
-            [
-                transforms.TrivialAugmentWide(),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
-
-    elif aug == "randaugment":
-        tf_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Resize((imsize, imsize)),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
-        tf_train = transforms.Compose(
-            [
-                transforms.Resize((imsize, imsize)),
-                transforms.RandAugment(),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
-
+    
     elif aug == "torch-only-flips":
         tf_test = transforms.Compose(
             [
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -342,16 +435,16 @@ def choose_aug(aug, args):
             [
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomVerticalFlip(),
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
     elif aug == "aug-01":
         tf_test = transforms.Compose(
             [
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -382,8 +475,8 @@ def choose_aug(aug, args):
                         transforms.RandomEqualize(),
                     ]
                 ),
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -393,8 +486,8 @@ def choose_aug(aug, args):
                 transforms.ColorJitter(
                     brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1
                 ),
-                transforms.ToTensor(),
                 transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
@@ -559,8 +652,70 @@ def choose_aug(aug, args):
         )
         tf_test = lambda x: transform_test(image=np.array(x))["image"]
         tf_train = lambda x: transform_train(image=np.array(x))["image"]
+    
+    elif aug.startswith("up-sampling"):
+        if class_counts is None:
+            raise ValueError("class_counts must be provided for up-sampling augmentation")
+        
+        # Get the indices of the 5 minority classes
+        minority_classes = sorted(range(len(class_counts)), key=lambda i: class_counts[i])[:1]
+        
+        tf_aug_02 = transforms.Compose(
+            [
+                #transforms.ToTensor(),
+                transforms.Resize((imsize, imsize)),
+                ConvertToUint8(),  # Add conversion to uint8 before equalize
+                # Apply aug-02 specific transformations here...
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomVerticalFlip(),
+                transforms.RandomChoice(
+                    [
+                        transforms.GaussianBlur(kernel_size=(3, 3)),
+                        #transforms.ColorJitter(brightness=0.5, hue=0.1), #changes brightness and hue.
+                    ]
+                ),
+                transforms.RandomChoice(
+                    [
+                        transforms.RandomRotation(degrees=(0, 360)),
+                        transforms.RandomPerspective(distortion_scale=0.1),
+                        transforms.RandomAffine(
+                            degrees=(30, 70), translate=(0.1, 0.3), scale=(0.75, 0.9)
+                        ),
+                        transforms.RandomResizedCrop(size=(imsize, imsize)),
+                    ]
+                ),
+                transforms.RandomChoice(
+                    [
+                        #transforms.RandomAdjustSharpness(sharpness_factor=2), #modify the image sharpness
+                        #transforms.RandomAutocontrast(),      #modify the image contrast.
+                        transforms.RandomEqualize(),
+                    ]
+                ),
+                transforms.ToTensor(),
+                transforms.Resize((imsize, imsize)),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        
+        tf_none = transforms.Compose(
+            [
+                transforms.Resize((imsize, imsize)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+        
+        # def tf_train(image, label):
+        #     if label in minority_classes:
+        #         return tf_aug_02(image)
+        #     else:
+        #         return tf_none(image)
 
+        # tf_test = tf_none  # Use 'none' augmentation for test as per the specification
+
+        return tf_none, tf_aug_02, tf_none, minority_classes
+    #self.tf_train, tf_aug_02, self.tf_test, minority_classes
     else:
         raise ValueError(f"Invalid augmentation value {aug}")
-
+    
     return tf_test, tf_train
