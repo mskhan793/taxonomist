@@ -1,5 +1,6 @@
 import pickle
 import uuid
+import gzip
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,7 @@ class TaxonomistModelArguments:
     smoke_test: bool = False
 
     log_every_n_steps: Optional[int] = 10
+    check_val_every_n_epoch: Optional[int] = 1
     suffix = None
 
     k: float = 1.0  # Add this line
@@ -313,6 +315,7 @@ class TaxonomistModel:
         logger.watch(model)
         wandb.init()
         wandb.config.update(self.args, allow_val_change=True)
+        wandb.config.update({"basename": self.basename})
         # logger = TensorBoardLogger(args.log_dir,
         #                            name=basename,
         #                            version=uid)
@@ -340,7 +343,8 @@ class TaxonomistModel:
                 max_epochs=self.args.max_epochs,
                 min_epochs=self.args.min_epochs,
                 logger=logger,
-                log_every_n_steps=10,
+                log_every_n_steps=self.args.log_every_n_steps,
+                check_val_every_n_epoch=self.args.check_val_every_n_epoch,
                 limit_train_batches=limit_train_batches,
                 limit_val_batches=limit_val_batches,
                 limit_test_batches=limit_test_batches,
@@ -375,6 +379,7 @@ class TaxonomistModel:
 
     def _predict(self, trainer, model, dm, class_map, n_classes, out_folder=None):
         # Actual prediction
+        df = None
         if not self.args.tta:
             trainer.test(model, dm)
             y_true, y_pred, fnames = model.y_true, model.y_pred, model.fnames
@@ -432,9 +437,9 @@ class TaxonomistModel:
                 df.to_csv(out_folder / outname, index=True)
                 print(out_folder / outname)
             else:  # Outputs of feature extraction can vary depending on the pooling
-                outname = f"{out_stem}_{self.args.feature_extraction}.p"
-                with open(out_folder / outname, "wb") as f:
-                    pickle.dump({"y_true": y_true, "features": y_pred}, f)
+                outname = f"{out_stem}_{self.args.feature_extraction}.p.gz"
+                with gzip.open(out_folder / outname, "wb") as f:
+                    pickle.dump({"fname": fnames, "y_true": y_true, "features": y_pred}, f)
                 print(out_folder / outname)
 
         return df
