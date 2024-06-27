@@ -146,3 +146,19 @@ dmypy.json
 *.txt
 *.pt
 *.ckpt
+
+
+# Bash scripts
+*.sh
+
+#error and output text files
+*.txt
+
+
+# Specific files
+05_a_train_all_auto.sh
+06_predict_all.sh
+08_predict_process_all.sh
+09_evaluation.sh
+job_cross8_f0_train.sh
+job_cross8_f1_train.sh
