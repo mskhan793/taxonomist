@@ -9,8 +9,10 @@ from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
 import argparse
+import torch
 
 import sklearn.metrics
+from torchmetrics.classification import MulticlassAUROC
 
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, balanced_accuracy_score,multilabel_confusion_matrix, confusion_matrix, matthews_corrcoef
 from sklearn.preprocessing import LabelBinarizer
@@ -119,6 +121,57 @@ def load_metric(metric):
                 return roc_auc_score(y_true_encoded, y_pred_encoded, average='macro', multi_class='ovo')
         return roc_auc_func
 
+        # Multiclass AUROC (TorchMetrics)
+    # elif metric == "multiclass_auroc_macro":  # Macro-averaged AUROC
+    #     def macro_auroc(y, y_probs):
+    #         if isinstance(y, list):
+    #             y = np.array(y)
+    #         if isinstance(y_probs, list):
+    #             y_probs = np.array(y_probs)
+    #         auroc = MulticlassAUROC(num_classes=len(np.unique(y)), average="macro")
+    #         return auroc(torch.tensor(y_probs), torch.tensor(y)).item()
+    #     return macro_auroc
+
+    elif metric == "multiclass_auroc_macro":  
+        def macro_auroc(y, y_pred):  # Note: y_pred should be class labels here
+            if isinstance(y, list):
+                y = np.array(y)
+            if isinstance(y_pred, list):
+                y_pred = np.array(y_pred)
+
+            # Convert labels to one-hot encoded probabilities
+            num_classes = len(np.unique(y))
+            y_probs = np.zeros((len(y_pred), num_classes))
+            for i, label in enumerate(y_pred):
+                label_index = np.where(np.unique(y) == label)[0][0]
+                y_probs[i, label_index] = 1
+            y_encoded = lb.fit_transform(y)
+            auroc = MulticlassAUROC(num_classes=num_classes, average="macro")
+            return auroc(torch.tensor(y_probs), torch.tensor(y_encoded)).item()
+        return macro_auroc
+
+    elif metric == "multiclass_auroc_weighted":  # Weighted AUROC
+        def weighted_auroc(y, y_probs):
+            if isinstance(y, list):
+                y = np.array(y)
+            if isinstance(y_probs, list):
+                y_probs = np.array(y_probs)
+            auroc = MulticlassAUROC(num_classes=len(np.unique(y)), average="weighted")
+            return auroc(torch.tensor(y_probs), torch.tensor(y)).item()
+        return weighted_auroc
+    
+    elif metric == "roc_auc_ovr":
+        def roc_auc_ovr(y_true, y_score):
+            return roc_auc_score(y_true, y_score, multi_class='ovr', average=None)
+
+        return roc_auc_ovr
+    
+    elif metric == "roc_auc_ovo":
+        def roc_auc_ovo(y_true, y_score):
+            return roc_auc_score(y_true, y_score, multi_class='ovo', average=None)
+
+        return roc_auc_ovo
+
     elif metric == "g_mean":
         return lambda y, yhat: geometric_mean_score(y, yhat, average='macro')
 
@@ -175,7 +228,7 @@ def calc_bootstrap(df, n_repeats, alpha=0.95):
         bs = df.sample(n=len(df), replace=True)
         return calc_metrics(bs)
 
-    bs_value_list = Parallel(n_jobs=10)(
+    bs_value_list = Parallel(n_jobs=20)(
         delayed(_bootstrap)(df) for _ in tqdm(range(n_repeats))
     )
 
@@ -196,7 +249,7 @@ def calc_bootstrap(df, n_repeats, alpha=0.95):
 def print_fewest_classes_info(df, class_counts, confusion_matrix):
     # Get unique classes in the order they appear in the confusion matrix
     unique_classes = np.unique(df['y_true'])
-    fewest_samples_classes = class_counts.nsmallest(10).index.tolist()
+    fewest_samples_classes = class_counts.nsmallest(39).index.tolist()
 
     print("Fewest Samples Classes Information:")
     fewest_classes_info = []
@@ -373,7 +426,7 @@ if __name__ == "__main__":
 # Code for classes with fewest samples
 
 class_counts = df['y_true'].value_counts()
-fewest_samples_classes = class_counts.nsmallest(10).index.tolist()
+fewest_samples_classes = class_counts.nsmallest(39).index.tolist()
 df_fewest_samples = df[df['y_true'].isin(fewest_samples_classes)]
 fewest_samples_values = calc_metrics(df_fewest_samples)
 fewest_samples_results = pd.DataFrame({

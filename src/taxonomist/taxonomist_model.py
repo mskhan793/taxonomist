@@ -351,7 +351,8 @@ class TaxonomistModel:
                 callbacks=callbacks,
                 precision=self.args.precision,
                 deterministic=self.args.deterministic,
-                gradient_clip_val=0.5,
+                #gradient_clip_val=0.5,
+                detect_anomaly=True,
             )
             return trainer
         else:

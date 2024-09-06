@@ -72,7 +72,7 @@ class FocalLoss(torch.nn.Module):
         
         # Now targets is guaranteed to be of a type suitable for indexing
         alpha_t = self.alpha[targets]
-        print("The value of alpha inside focal loss is: ", alpha_t)
+        #print("The value of alpha inside focal loss is: ", alpha_t)
         loss = alpha_t * ((1 - pt) ** self.gamma) * CE_loss
 
         if self.reduction == 'mean':
@@ -195,6 +195,9 @@ class CrossEntropyImbalanceLoss(nn.Module):
         self.total_epochs = total_epochs
 
     def forward(self, inputs, targets, current_epoch):
+        # Convert targets to LongTensor for cross_entropy
+        targets = targets.long()  
+
         # Calculate weights
         alpha = 1 - (current_epoch / self.total_epochs)
         beta = current_epoch / self.total_epochs
