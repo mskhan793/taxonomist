@@ -161,4 +161,4 @@ dmypy.json
 08_predict_process_all.sh
 09_evaluation.sh
 job_cross8_f0_train.sh
-job_cross8_f1_train.sh
+job_cross8_f1_train.sh*.sh
