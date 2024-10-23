@@ -363,9 +363,11 @@ class LitModule(pl.LightningModule):
     def configure_optimizers(self):
         """Sets optimizers based on a dict passed as argument"""
         if self.opt_args["name"] == "adam":
-            optimizer = torch.optim.Adam(self.model.parameters(), self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), self.lr, weight_decay=1e-5)
         elif self.opt_args["name"] == "adamw":
-            optimizer = torch.optim.AdamW(self.model.parameters(), self.lr)
+            optimizer = torch.optim.AdamW(self.model.parameters(), self.lr, weight_decay=1e-5)
+        elif self.opt_args["name"] == "sgd":  # Add option for SGD
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, momentum=0.9, weight_decay=1e-5)  # Customize as needed
         else:
             raise Exception("Invalid optimizer")
 

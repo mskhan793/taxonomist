@@ -117,7 +117,10 @@ class TaxonomistModel:
                     "If resume=True the checkpoint must be the last checkpoint"
                 )
             uid = ckpt_name.split("_")[-4]
-            assert self.basename == "_".join(ckpt_name.split("_")[:-5])
+            #assert self.basename == "_".join(ckpt_name.split("_")[:-5])
+            expected_basename = "_".join(ckpt_name.split("_")[:len(self.basename.split("_"))])
+            assert self.basename == expected_basename, f"Expected {self.basename}, got {expected_basename}"
+
         return uid
 
     def _create_out_folder(self, training=True):

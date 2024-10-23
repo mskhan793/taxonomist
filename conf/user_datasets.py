@@ -25,6 +25,10 @@ def preprocess_dataset(data_folder, dataset_name, csv_path=None, fold=None, labe
             fnames[set_], labels[set_] = process_split_csv_finbenthic1(
                 data_folder, csv_path, set_, fold, label
             )
+        elif dataset_name == "bioscan":
+            fnames[set_], labels[set_] = process_split_csv_bioscan(
+                data_folder, csv_path, set_, fold, label
+            )
 
         elif dataset_name == "biodiscover":
             """
@@ -105,6 +109,22 @@ def process_split_csv_finbenthic2(data_folder, csv_path, set_, fold, label):
 
     fnames = df.apply(
         lambda x: Path(data_folder, "Images", x["individual"], x["img"]).resolve(),
+        axis=1,
+    ).values
+
+    for fname in fnames:
+        assert fname.exists()
+
+    labels = df[label].values
+
+    return fnames, labels
+
+def process_split_csv_bioscan(data_folder, csv_path, set_, fold, label):
+    df0 = pd.read_csv(csv_path)
+    df = df0[df0[str(fold)] == set_]
+
+    fnames = df.apply(
+        lambda x: Path(data_folder, x["part"], x["image"]).resolve(),
         axis=1,
     ).values
 
