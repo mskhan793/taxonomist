@@ -68,7 +68,7 @@ class TaxonomistModelArguments:
     accelerator: str = "auto"
     strategy: Union[str, int] = "auto"
     devices: Union[str, int] = "auto"
-    num_nodes: int = 1
+    num_nodes: int = 4
 
     log_dir: str = "logs"
     out_folder: str = "outputs"
@@ -81,9 +81,9 @@ class TaxonomistModelArguments:
     check_val_every_n_epoch: Optional[int] = 1
     suffix = None
 
-    k: float = 1.0  # Add this line
+    k: float = 0.3  # Add this line
     gamma: float = 2.0  # Add this line
-    theta: float = 0.5  # Add this line
+    theta: float = 3.0  # Add this line
     device: str = 'cuda'  # Add this line
 
 
@@ -99,6 +99,9 @@ class TaxonomistModel:
 
         # Initialize data_module here
         self.data_module = None
+        if not isinstance(self.args.num_nodes, int):
+            raise TypeError(f"Expected num_nodes to be an integer, but got {type(self.args.num_nodes)}")
+
 
     def _parse_uid(self):
         # It is possible to resume to an existing run that was cancelled/stopped if
@@ -342,7 +345,7 @@ class TaxonomistModel:
                 accelerator=self.args.accelerator, # auto
                 strategy=self.args.strategy, # auto
                 devices=self.args.devices, # auto
-                num_nodes=self.args.num_nodes, # 1
+                num_nodes= int(self.args.num_nodes), # 1
                 max_epochs=self.args.max_epochs,
                 min_epochs=self.args.min_epochs,
                 logger=logger,
@@ -357,6 +360,7 @@ class TaxonomistModel:
                 #gradient_clip_val=0.5,
                 detect_anomaly=True,
             )
+            print(f"Using num_nodes={self.args.num_nodes} in Trainer")
             return trainer
         else:
             trainer = pl.Trainer(

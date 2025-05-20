@@ -35,7 +35,8 @@ def cross_entropy(output, target):
 def calculate_alpha(class_counts, num_classes):
     # Calculate alpha values based on class_counts here
     # For example, inverse frequency or any other method
-    inverse_frequency = [1.0 / count for count in class_counts]
+    epsilon = 1e-8
+    inverse_frequency = [1.0 / (count + epsilon) for count in class_counts]
     # Normalize if necessary
     sum_inv_freq = sum(inverse_frequency)
     alpha = [inv_freq / sum_inv_freq for inv_freq in inverse_frequency]
@@ -83,71 +84,18 @@ class FocalLoss(torch.nn.Module):
             return loss
 
 
-# # Define the custom loss function
-# class CILoss(torch.nn.Module):
-#     def __init__(self, class_counts, k=1.0, theta=0.5, device='cuda'):
-#         super(CILoss, self).__init__()
-#         self.k = k
-#         self.theta = theta
-#         self.device = device
-#         N_max = max(class_counts)
-#         # Convert class_counts to a tensor
-#         class_counts_tensor = torch.tensor(class_counts, dtype=torch.float).to(device)
-#         # Corrected weights calculation
-#         #self.weights = torch.tensor([torch.log((N_max / N_j) + theta) for N_j in class_counts], dtype=torch.float).to(device)
-#         self.weights = torch.log((N_max / class_counts_tensor) + theta)
-
-#     def forward(self, inputs, targets):
-#         # Ensure targets is of type torch.long for indexing
-#         targets = targets.long()
-#         # Convert inputs to softmax probabilities
-#         probs = F.softmax(inputs, dim=1)
-#         # Sort weights according to the target order
-#         sorted_weights = self.weights[targets]
-#         # Calculate the log of probabilities
-#         log_probs = torch.log(probs)
-#         # Gather the log probabilities for each target class
-#         log_probs = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
-#         # Calculate the exponent term
-#         exp_term = torch.exp(-self.k * probs.gather(1, targets.unsqueeze(1)).squeeze(1))
-#         # Calculate the CI loss
-#         loss = -sorted_weights * exp_term * log_probs
-#         return loss.mean()
-
-# class CILoss(torch.nn.Module):
-#     def __init__(self, class_counts, k=1.0, theta=0.5, device='cuda'):
-#         super(CILoss, self).__init__()
-#         self.k = k
-#         self.theta = theta
-#         self.device = device
-#         N_max = max(class_counts)
-#         self.class_counts_tensor = torch.tensor(class_counts, dtype=torch.float).to(device)  # Calculate class_counts_tensor
-#         self.weights = torch.log((N_max / self.class_counts_tensor) + theta)
-
-#     def forward(self, inputs, targets):
-#         targets = targets.long()
-#         probs = F.softmax(inputs, dim=1)  # Probabilities for all classes
-        
-#         loss = 0.0
-#         for i in range(len(targets)):  # Loop over samples
-#             for j in range(probs.shape[1]):  # Loop over classes
-#                 exp_term = torch.exp(-self.k * probs[i, j] * self.class_counts_tensor[j]) 
-#                 loss += -self.weights[j] * exp_term * torch.log(probs[i, j]) 
-        
-#         return loss.mean() 
-
-
 class CILoss(torch.nn.Module):
-    def __init__(self, class_counts, k=1.0, theta=0.5, device='cuda'):
+    def __init__(self, class_counts, k=0.3, theta=3.0, device='cuda'):
         super().__init__()
         self.k = k
         self.theta = theta
         self.device = device
 
-        N_max = max(class_counts)
+        self.N_max = max(class_counts)
         self.class_counts_tensor = torch.tensor(class_counts, dtype=torch.float).to(device)
-        self.weights = torch.log(N_max / self.class_counts_tensor + theta)
-
+        #self.weights = torch.log(N_max / self.class_counts_tensor + theta)
+        #self.weights = torch.log(self.N_max / self.class_counts_tensor) + self.theta #+ 1e-8 # If any class has 0 samples in the original distribution, this will cause division-by-zero when computing N_max / class_counts.
+        self.weights = torch.log(self.N_max / (self.class_counts_tensor + 1e-8)) + self.theta
     def forward(self, inputs, targets):
         targets = targets.long()
 
@@ -167,29 +115,8 @@ class CILoss(torch.nn.Module):
         return loss.mean()
 
 
-
-
-
-# class CrossEntropyImbalanceLoss(nn.Module):
-#     def __init__(self, class_counts, total_epochs, k=1.0, theta=0.5, device='cuda'):
-#         super(CrossEntropyImbalanceLoss, self).__init__()
-#         self.cross_entropy = cross_entropy
-#         self.ci_loss = CILoss(class_counts, k, theta, device)
-#         self.total_epochs = total_epochs
-
-#     def forward(self, inputs, targets, current_epoch):
-#         # Calculate weights
-#         alpha = 1 - (current_epoch / self.total_epochs)
-#         beta = current_epoch / self.total_epochs
-#         # Compute losses
-#         ce_loss = self.cross_entropy(inputs, targets)
-#         ci_loss = self.ci_loss(inputs, targets)
-#         # Combine losses
-#         loss = alpha * ce_loss + beta * ci_loss
-#         return loss
-
 class CrossEntropyImbalanceLoss(nn.Module):
-    def __init__(self, class_counts, total_epochs, k=1.0, theta=0.5, device='cuda'):
+    def __init__(self, class_counts, total_epochs, k=0.3, theta=3.0, device='cuda'):
         super(CrossEntropyImbalanceLoss, self).__init__()
         self.ci_loss = CILoss(class_counts, k, theta, device)
         self.total_epochs = total_epochs
@@ -217,9 +144,7 @@ class CrossEntropyImbalanceLoss(nn.Module):
 
 
 
-
-
-def choose_criterion(name, class_counts=None, n_classes=None, k=1.0, gamma=2.0, theta=0.5, device='cuda', total_epochs=None):
+def choose_criterion(name, class_counts=None, n_classes=None, k=0.3, gamma=2.0, theta=3.0, device='cuda', total_epochs=None):
     if name == "cross-entropy":
         return cross_entropy
     elif name == "mse":
@@ -301,9 +226,9 @@ class LitModule(pl.LightningModule):
         lr_scheduler: dict = None,
         label_transform=None,
         class_counts=None,  # Add this parameter
-        k=1.0,
+        k=0.3,
         gamma=2.0,         # Add this parameter
-        theta=0.5,         # Add this parameter
+        theta=3.0,         # Add this parameter
         device='cuda',     # Add this parameter
         total_epochs=None # Add this parameter
     ):

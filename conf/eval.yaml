@@ -1,7 +1,5 @@
 metrics:
-    - accuracy
-    - precision_macro
-    - recall_macro
+    - accuracy  
     - f1_macro
     - g_mean
     - mcc
