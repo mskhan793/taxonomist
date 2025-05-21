@@ -336,3 +336,28 @@ def augment_images(image_paths, augmentation, n_augmentations=1):
 3. **Experiment with target values** - The optimal number of samples per class depends on your specific dataset
 4. **Combine with loss functions** - Use appropriate loss functions alongside sampling techniques for best results
 5. **Monitor performance** - Track metrics on the validation set to ensure sampling improves model generalization
+
+# Generative Models
+
+In addition to classification, Taxonomist can be extended to work with generative models for synthesizing new training data, which can be particularly useful for augmenting minority classes.
+
+## DCGAN Implementation
+
+For generating synthetic images, we utilize a Deep Convolutional Generative Adversarial Network (DCGAN) implementation. This approach can be especially valuable when working with imbalanced datasets, as it allows you to generate additional training examples for underrepresented classes.
+
+The DCGAN implementation is based on the architecture proposed in the original DCGAN paper, with a generator that transforms random noise into images and a discriminator that distinguishes between real and generated images.
+
+Key components:
+- **Generator**: Uses transposed convolutions to upsample from a noise vector to a full image
+- **Discriminator**: Uses convolutional layers to classify images as real or fake
+- **Training process**: Alternates between training the discriminator and generator
+
+Our implementation is adapted from [Aladdin Persson's Machine Learning Collection](https://github.com/aladdinpersson/Machine-Learning-Collection/tree/master/ML/Pytorch/GANs/2.%20DCGAN), which provides an efficient PyTorch implementation of the DCGAN architecture.
+
+To use DCGAN for augmenting your dataset:
+1. Train the GAN on your existing data
+2. Generate synthetic images for underrepresented classes
+3. Combine with your original dataset
+4. Train your classification model on the augmented dataset
+
+This approach can be used alongside the sampling techniques described earlier for even better results on imbalanced datasets.
