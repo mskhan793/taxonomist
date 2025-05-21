@@ -112,30 +112,50 @@ Taxonomist is based on an opinionated file system that produces following output
 - Grouped prediction outputs
 - Metrics for several models in csv format
 
+# Loss Functions
+
+Taxonomist provides three different loss functions to handle various classification scenarios, especially for imbalanced datasets common in species classification:
+
+## Cross Entropy Loss
+
+The standard cross-entropy loss function is the default choice for classification tasks. It works well when classes are balanced.
+
+```python
+# Example usage in your configuration:
+criterion: "cross-entropy"
 ```
-Outputs
-├── Dataset A
-│   ├── Model A1
-│   │   ├── fold 0
-│   │   │   ├── model_a1-f0.ckpt (model weights)
-│   │   │   ├── aug-model_a1(augmentation visualizations)
-│   │   │   │   ├── aug-test.png
-│   │   │   │   ├── aug-train.png
-│   │   │   │   └── aug-val.png
-│   │   │   └── predictions (prediction outputs)
-│   │   │       ├── metrics
-│   │   │       │   └── model_a1-f0-test_aug_preds_metrics.csv
-│   │   │       ├── test_aug1
-│   │   │       │   ├── model_a1-f0-test_aug1_preds.csv
-│   │   │       │   └── model_a1-f0-test_aug1_preds_grouped.csv
-│   │   │       └── test_aug2
-│   │   │           └── ...
-│   │   └── fold 1
-│   │       └── ...
-│   └── Model A2
-│       └── ...
-├── Dataset B
-│   ├── Model B1
-│   └── ...
-└── ...
+
+## Focal Loss
+
+Focal Loss is designed to address class imbalance by down-weighting the loss assigned to well-classified examples, focusing more on hard, misclassified examples. It's particularly useful for datasets with a high imbalance ratio.
+
+```python
+# Example usage in your configuration:
+criterion: "focal"
+params:
+  gamma: 2.0  # Adjusts the down-weighting of well-classified examples (default is 2.0)
+```
+
+The Focal Loss automatically adjusts class weights based on the class distribution in your dataset. The `gamma` parameter controls how much to down-weight easy examples - higher values increase focus on hard examples.
+
+## Class Imbalance Loss (CILoss)
+
+This is a specialized loss function for handling severe class imbalance. It applies a logarithmic weight based on class frequencies and includes an exponential term to adjust the loss based on the model's confidence.
+
+```python
+# Example usage in your configuration:
+criterion: "class-imbalance"
+params:
+  k: 0.3     # Controls the exponential term (default is 0.3)
+  theta: 3.0  # Offset for the logarithmic weighting (default is 3.0)
+```
+
+### When to use which loss function?
+
+- **Cross Entropy**: Use for balanced datasets or as a baseline
+- **Focal Loss**: Use when you have moderate class imbalance and want to focus on hard examples
+- **Class Imbalance Loss**: Use for severe class imbalance where some classes have very few examples
+
+You can specify the loss function in your training configuration file or command line arguments when running the training script.
+
 ```

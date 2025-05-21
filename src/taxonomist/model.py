@@ -115,35 +115,6 @@ class CILoss(torch.nn.Module):
         return loss.mean()
 
 
-class CrossEntropyImbalanceLoss(nn.Module):
-    def __init__(self, class_counts, total_epochs, k=0.3, theta=3.0, device='cuda'):
-        super(CrossEntropyImbalanceLoss, self).__init__()
-        self.ci_loss = CILoss(class_counts, k, theta, device)
-        self.total_epochs = total_epochs
-
-    def forward(self, inputs, targets, current_epoch):
-        # Convert targets to LongTensor for cross_entropy
-        targets = targets.long()  
-
-        # Calculate weights
-        alpha = 1 - (current_epoch / self.total_epochs)
-        beta = current_epoch / self.total_epochs
-        
-        # Ensure alpha and beta are within [0, 1]
-        alpha = max(0.0, min(1.0, alpha))
-        beta = max(0.0, min(1.0, beta))
-
-        # Compute losses
-        ce_loss = F.cross_entropy(inputs, targets)
-        ci_loss = self.ci_loss(inputs, targets)
-
-        # Combine losses
-        loss = alpha * ce_loss + beta * ci_loss
-        
-        return loss
-
-
-
 def choose_criterion(name, class_counts=None, n_classes=None, k=0.3, gamma=2.0, theta=3.0, device='cuda', total_epochs=None):
     if name == "cross-entropy":
         return cross_entropy
@@ -160,10 +131,6 @@ def choose_criterion(name, class_counts=None, n_classes=None, k=0.3, gamma=2.0, 
     elif name == "focal":
         # Note: Adjust alpha and gamma as per your requirement
         return FocalLoss(class_counts, num_classes=n_classes, gamma=gamma)
-    elif name == "cross-entropy-imbalance":
-        if total_epochs is None:
-            raise ValueError("total_epochs must be provided for cross-entropy-imbalance loss")
-        return CrossEntropyImbalanceLoss(class_counts, total_epochs, k=k, theta=theta, device=device)
     else:
         raise Exception(f"Invalid criterion name '{name}'")
 
@@ -230,7 +197,6 @@ class LitModule(pl.LightningModule):
         gamma=2.0,         # Add this parameter
         theta=3.0,         # Add this parameter
         device='cuda',     # Add this parameter
-        total_epochs=None # Add this parameter
     ):
         """Initialize the module
         Args:
@@ -260,11 +226,10 @@ class LitModule(pl.LightningModule):
         self.lr = lr
         self.lr_scheduler = lr_scheduler
         self.label_transform = label_transform
-        self.criterion = choose_criterion(criterion, class_counts, n_classes, k,  gamma, theta, device, total_epochs)
+        self.criterion = choose_criterion(criterion, class_counts, n_classes, k,  gamma, theta, device)
         self.opt_args = opt
-        self.epoch_counter = 0 # Initialize epoch counter
 
-        if criterion in ["cross-entropy", "class-imbalance", "focal", "cross-entropy-imbalance"]:
+        if criterion in ["cross-entropy", "class-imbalance", "focal"]:
             self.is_classifier = True
         else:
             self.is_classifier = False
@@ -314,10 +279,7 @@ class LitModule(pl.LightningModule):
         y = batch["y"]
         fname = batch["fname"]
         out = self.model(x)
-        if self.hparams.criterion == "cross-entropy-imbalance":
-            loss = self.criterion(out, y, self.epoch_counter)  # Pass epoch counter for dynamic weighting
-        else:
-            loss = self.criterion(out, y)
+        loss = self.criterion(out, y)
         #loss = self.criterion(out, y)
 
         # Set the batch size for logging
@@ -366,13 +328,6 @@ class LitModule(pl.LightningModule):
         outputs = self.training_step_outputs
         _, _ = self.common_epoch_end(outputs, "train")
         self.training_step_outputs.clear()
-        self.epoch_counter += 1 # Increment epoch counter
-        self.log(
-            "epoch/current",
-            self.epoch_counter,
-            on_epoch=True,
-            batch_size=self.batch_size,
-        )
 
 
     # Validation
