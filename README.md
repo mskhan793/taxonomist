@@ -158,4 +158,181 @@ params:
 
 You can specify the loss function in your training configuration file or command line arguments when running the training script.
 
+# Data Sampling Techniques
+
+When working with imbalanced datasets, which is common in species classification, you can apply various sampling techniques to improve model performance. Taxonomist supports several approaches to handle class imbalance at the data level:
+
+## Upsampling
+
+Upsampling increases the number of samples in minority classes by randomly duplicating existing samples. This helps the model learn better from underrepresented classes.
+
+```python
+# General example of upsampling minority classes
+import pandas as pd
+from sklearn.utils import resample
+
+# Example with a dataset table
+dataset = pd.read_csv('your_dataset.csv')
+train_data = dataset[dataset['split'] == 'train']  # Only modify training data
+
+# Set target count for each class
+target_samples = 1000  # Choose appropriate value for your dataset
+
+upsampled_data = pd.DataFrame()
+# Process each class separately
+for label, group in train_data.groupby('label'):
+    if len(group) < target_samples:
+        # Only upsample if below target
+        upsampled_group = resample(
+            group,
+            replace=True,  # Sample with replacement
+            n_samples=target_samples,
+            random_state=42,
+            # Optionally stratify by another column to preserve structure
+            stratify=group['group_id'] if 'group_id' in group.columns else None
+        )
+        upsampled_data = pd.concat([upsampled_data, upsampled_group])
+    else:
+        # Keep larger classes as they are
+        upsampled_data = pd.concat([upsampled_data, group])
+
+# Combine with validation/test data which remains unchanged
+final_data = pd.concat([upsampled_data, dataset[dataset['split'] != 'train']])
 ```
+
+## Downsampling
+
+Downsampling reduces the number of samples in majority classes to balance the dataset. This can help prevent the model from being biased toward majority classes.
+
+```python
+# General example of downsampling majority classes
+import pandas as pd
+from sklearn.utils import resample
+
+# Example with a dataset table
+dataset = pd.read_csv('your_dataset.csv')
+train_data = dataset[dataset['split'] == 'train']
+
+# Set maximum samples per class
+max_samples = 500  # Choose appropriate value for your dataset
+
+downsampled_data = pd.DataFrame()
+# Process each class separately
+for label, group in train_data.groupby('label'):
+    if len(group) > max_samples:
+        # Only downsample if above target
+        downsampled_group = resample(
+            group,
+            replace=False,  # Sample without replacement
+            n_samples=max_samples,
+            random_state=42,
+            # Optionally stratify by another column to preserve structure
+            stratify=group['group_id'] if 'group_id' in group.columns else None
+        )
+        downsampled_data = pd.concat([downsampled_data, downsampled_group])
+    else:
+        # Keep smaller classes as they are
+        downsampled_data = pd.concat([downsampled_data, group])
+
+# Combine with validation/test data which remains unchanged
+final_data = pd.concat([downsampled_data, dataset[dataset['split'] != 'train']])
+```
+
+## Hybrid Approach (Up-Down Sampling)
+
+A hybrid approach combines both upsampling and downsampling to achieve balanced classes. This targets a specific number of samples per class by either upsampling minority classes or downsampling majority classes.
+
+```python
+# General example of hybrid up-down sampling
+import pandas as pd
+from sklearn.utils import resample
+
+# Example with a dataset table
+dataset = pd.read_csv('your_dataset.csv')
+train_data = dataset[dataset['split'] == 'train']
+
+# Set target samples for each class
+target_samples = 800  # Choose appropriate value for your dataset
+
+balanced_data = pd.DataFrame()
+# Process each class separately
+for label, group in train_data.groupby('label'):
+    if len(group) < target_samples:
+        # Upsample minority class
+        resampled_group = resample(
+            group,
+            replace=True,  # Sample with replacement
+            n_samples=target_samples,
+            random_state=42,
+            stratify=group['group_id'] if 'group_id' in group.columns else None
+        )
+    elif len(group) > target_samples:
+        # Downsample majority class
+        resampled_group = resample(
+            group,
+            replace=False,  # Sample without replacement
+            n_samples=target_samples,
+            random_state=42,
+            stratify=group['group_id'] if 'group_id' in group.columns else None
+        )
+    else:
+        # Keep as is if already at target size
+        resampled_group = group
+        
+    balanced_data = pd.concat([balanced_data, resampled_group])
+
+# Combine with validation/test data which remains unchanged
+final_data = pd.concat([balanced_data, dataset[dataset['split'] != 'train']])
+```
+
+## Combining with Augmentation
+
+Sampling techniques can be combined with image augmentation for even better results. Taxonomist supports various augmentation strategies through the Albumentations library.
+
+When upsampling, consider applying different augmentations to the duplicated samples to increase diversity:
+
+```python
+# Example of upsampling with augmentation
+import pandas as pd
+import numpy as np
+import cv2
+from sklearn.utils import resample
+import albumentations as A
+
+# Define augmentation pipeline
+augmentation = A.Compose([
+    A.HorizontalFlip(p=0.5),
+    A.RandomBrightnessContrast(p=0.2),
+    A.ShiftScaleRotate(p=0.2),
+    # Add more transformations as needed
+])
+
+# Function to apply augmentation
+def augment_images(image_paths, augmentation, n_augmentations=1):
+    augmented_images = []
+    augmented_paths = []
+    
+    for path in image_paths:
+        image = cv2.imread(path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        for i in range(n_augmentations):
+            augmented = augmentation(image=image)['image']
+            # Save augmented image or keep in memory
+            aug_path = f"{path.split('.')[0]}_aug_{i}.{path.split('.')[1]}"
+            cv2.imwrite(aug_path, cv2.cvtColor(augmented, cv2.COLOR_RGB2BGR))
+            augmented_paths.append(aug_path)
+    
+    return augmented_paths
+
+# Apply in upsampling workflow
+# Instead of just duplicating samples, create new augmented versions
+```
+
+### Tips for Effective Sampling
+
+1. **Only modify training data** - Always keep your validation and test sets with their original distribution
+2. **Consider stratification** - When sampling, stratify by relevant groups (e.g., specimen ID) to maintain data structure
+3. **Experiment with target values** - The optimal number of samples per class depends on your specific dataset
+4. **Combine with loss functions** - Use appropriate loss functions alongside sampling techniques for best results
+5. **Monitor performance** - Track metrics on the validation set to ensure sampling improves model generalization
